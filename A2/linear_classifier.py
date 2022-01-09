@@ -6,6 +6,7 @@ import torch
 import random
 import statistics
 from abc import abstractmethod
+from itertools import product
 
 def hello_linear_classifier():
   """
@@ -126,7 +127,8 @@ def svm_loss_naive(W, X, y, reg):
         # that the loss is being computed.                                    #
         #######################################################################
         # Replace "pass" statement with your code
-        pass
+        dW[:, j] += X[i]
+        dW[:, y[i]] -= X[i]
         #######################################################################
         #                       END OF YOUR CODE                              #
         #######################################################################
@@ -144,7 +146,8 @@ def svm_loss_naive(W, X, y, reg):
   # Compute the gradient of the loss function and store it in dW. (part 2)    #
   #############################################################################
   # Replace "pass" statement with your code
-  pass
+  dW /= num_train
+  dW += reg * (2 * W)
   #############################################################################
   #                             END OF YOUR CODE                              #
   #############################################################################
@@ -178,7 +181,12 @@ def svm_loss_vectorized(W, X, y, reg):
   # result in loss.                                                           #
   #############################################################################
   # Replace "pass" statement with your code
-  pass
+  num_train = X.shape[0]
+  scores = X @ W  # (N,C)
+  margins = (scores.t() - scores[torch.arange(num_train), y] + 1).t()
+  margins[(margins < 0)] = 0
+  margins[torch.arange(num_train), y] = 0
+  loss = (margins.sum()/ num_train) + reg * (W**2).sum()
   #############################################################################
   #                             END OF YOUR CODE                              #
   #############################################################################
@@ -193,7 +201,27 @@ def svm_loss_vectorized(W, X, y, reg):
   # loss.                                                                     #
   #############################################################################
   # Replace "pass" statement with your code
-  pass
+
+  num_classes = W.size(1)
+  num_features = X.size(1)
+  positive_margin_indices = (margins > 0).nonzero()
+
+  grouping_tensor = torch.zeros((num_classes, num_train, num_features), device=X.device) # (C, N, D)
+  # rows of ones to retrieve only the relevant records for each class
+  grouping_tensor[positive_margin_indices[:, 1], positive_margin_indices[:, 0], :] = torch.ones(num_features, device=grouping_tensor.device)
+  relevant_rows_per_class = grouping_tensor * X
+  dW = relevant_rows_per_class.sum(axis=1).t() # (D,C)
+
+  positive_margins_counts = (margins > 0).sum(axis=1) # (N,)
+  correct_class_update = (positive_margins_counts * X.t()).t() # (N, D)
+  # summing the gradient updates per class
+  correct_class_update_summed = torch.zeros((num_classes, num_features), dtype=X.dtype, device=correct_class_update.device) \
+                                    .index_add(0, y, correct_class_update) # (C,D)
+
+  dW -= correct_class_update_summed.t()
+
+  dW /= num_train
+  dW += 2 * reg * W
   #############################################################################
   #                             END OF YOUR CODE                              #
   #############################################################################
@@ -216,7 +244,9 @@ def sample_batch(X, y, num_train, batch_size):
   # Hint: Use torch.randint to generate indices.                          #
   #########################################################################
   # Replace "pass" statement with your code
-  pass
+  rand_indices = randint(high=num_train, size=(batch_size,))
+  X_batch = X[rand_indices]
+  y_batch = y[rand_indices]
   #########################################################################
   #                       END OF YOUR CODE                                #
   #########################################################################
@@ -274,7 +304,7 @@ def train_linear_classifier(loss_func, W, X, y, learning_rate=1e-3,
     # Update the weights using the gradient and the learning rate.          #
     #########################################################################
     # Replace "pass" statement with your code
-    pass
+    W -= learning_rate * grad
     #########################################################################
     #                       END OF YOUR CODE                                #
     #########################################################################
@@ -305,7 +335,8 @@ def predict_linear_classifier(W, X):
   # Implement this method. Store the predicted labels in y_pred.            #
   ###########################################################################
   # Replace "pass" statement with your code
-  pass
+  scores = X @ W
+  y_pred = torch.argmax(scores, dim=1)
   ###########################################################################
   #                           END OF YOUR CODE                              #
   ###########################################################################
@@ -331,7 +362,8 @@ def svm_get_search_params():
   # TODO:   add your own hyper parameter lists.                             #
   ###########################################################################
   # Replace "pass" statement with your code
-  pass
+  learning_rates = [0.001, 0.002, 0.005, 0.01, 0.02]
+  regularization_strengths = [0.5, 1, 1.5, 2]
   ###########################################################################
   #                           END OF YOUR CODE                              #
   ###########################################################################
@@ -375,9 +407,37 @@ def test_one_param_set(cls, data_dict, lr, reg, num_iters=2000):
   # Feel free to uncomment this, at the very beginning,
   # and don't forget to remove this line before submitting your final version
   # num_iters = 100
-
   # Replace "pass" statement with your code
-  pass
+  max_params = None
+  max_acc = None
+  for lr_i, reg_i in product(lr, reg):
+    W, _ = train_linear_classifier(svm_loss_vectorized, 
+                                   W=None, 
+                                   X=data_dict['X_train'], 
+                                   y=data_dict['y_train'], 
+                                   learning_rate=lr_i,
+                                   reg=reg_i)
+    y_train_pred = predict_linear_classifier(W, data_dict['X_train'])
+    y_val_pred = predict_linear_classifier(W, data_dict['X_val'])
+
+    train_acc_i = (data_dict['y_train']==y_train_pred).sum() / len(data_dict['y_train'])
+    val_acc_i = (data_dict['y_val']==y_val_pred).sum() / len(data_dict['y_val'])
+
+    if not max_acc or val_acc_i > max_acc:
+      max_acc = val_acc_i
+      best_params = (lr_i, reg_i)
+
+  best_lr, best_reg = best_params
+  cls, _ = train_linear_classifier(svm_loss_vectorized, 
+                               W=None, 
+                               X=data_dict['X_train'], 
+                               y=data_dict['y_train'], 
+                               learning_rate=best_lr,
+                               reg=best_reg,
+                               num_iters=num_iters)
+
+  train_acc = predict_linear_classifier(cls, data_dict['X_train'])
+  val_acc = predict_linear_classifier(cls, data_dict['X_val'])
   ############################################################################
   #                            END OF YOUR CODE                              #
   ############################################################################
@@ -423,6 +483,7 @@ def softmax_loss_naive(W, X, y, reg):
   #############################################################################
   # Replace "pass" statement with your code
   pass
+
   #############################################################################
   #                          END OF YOUR CODE                                 #
   #############################################################################
