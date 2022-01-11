@@ -244,7 +244,7 @@ def sample_batch(X, y, num_train, batch_size):
   # Hint: Use torch.randint to generate indices.                          #
   #########################################################################
   # Replace "pass" statement with your code
-  rand_indices = randint(high=num_train, size=(batch_size,))
+  rand_indices = torch.randint(high=num_train, size=(batch_size,))
   X_batch = X[rand_indices]
   y_batch = y[rand_indices]
   #########################################################################
@@ -408,36 +408,17 @@ def test_one_param_set(cls, data_dict, lr, reg, num_iters=2000):
   # and don't forget to remove this line before submitting your final version
   # num_iters = 100
   # Replace "pass" statement with your code
-  max_params = None
-  max_acc = None
-  for lr_i, reg_i in product(lr, reg):
-    W, _ = train_linear_classifier(svm_loss_vectorized, 
-                                   W=None, 
-                                   X=data_dict['X_train'], 
-                                   y=data_dict['y_train'], 
-                                   learning_rate=lr_i,
-                                   reg=reg_i)
-    y_train_pred = predict_linear_classifier(W, data_dict['X_train'])
-    y_val_pred = predict_linear_classifier(W, data_dict['X_val'])
+  cls.train(X_train=data_dict['X_train'], 
+            y_train=data_dict['y_train'], 
+            learning_rate=lr,
+            reg=reg,
+            num_iters=num_iters)
 
-    train_acc_i = (data_dict['y_train']==y_train_pred).sum() / len(data_dict['y_train'])
-    val_acc_i = (data_dict['y_val']==y_val_pred).sum() / len(data_dict['y_val'])
+  y_pred_train = cls.predict(data_dict['X_train'])
+  y_pred_val = cls.predict(data_dict['X_val'])
 
-    if not max_acc or val_acc_i > max_acc:
-      max_acc = val_acc_i
-      best_params = (lr_i, reg_i)
-
-  best_lr, best_reg = best_params
-  cls, _ = train_linear_classifier(svm_loss_vectorized, 
-                               W=None, 
-                               X=data_dict['X_train'], 
-                               y=data_dict['y_train'], 
-                               learning_rate=best_lr,
-                               reg=best_reg,
-                               num_iters=num_iters)
-
-  train_acc = predict_linear_classifier(cls, data_dict['X_train'])
-  val_acc = predict_linear_classifier(cls, data_dict['X_val'])
+  train_acc = (y_pred_train == data_dict['y_train']).sum() / len(data_dict['y_train'])
+  val_acc = (y_pred_val == data_dict['y_val']).sum() / len(data_dict['y_val'])
   ############################################################################
   #                            END OF YOUR CODE                              #
   ############################################################################
@@ -482,7 +463,32 @@ def softmax_loss_naive(W, X, y, reg):
   # regularization!                                                           #
   #############################################################################
   # Replace "pass" statement with your code
-  pass
+  num_train = X.size(0)
+  num_classes = W.size(1)
+  scores = X @ W
+  stable_scores = (scores.t() - scores.max(axis=1)[0]).t()
+  exp_scores = torch.exp(stable_scores)
+  softmax = torch.zeros_like(exp_scores)
+
+  for i in range(num_train):
+    scores_sum = 0
+    for j in range(num_classes):
+      scores_sum += exp_scores[i, j]
+    
+    for j in range(num_classes):
+      softmax[i, j] = exp_scores[i, j] / scores_sum
+      if j == y[i]:
+        loss -= torch.log(softmax[i, j])
+        dW[:, j] += (softmax[i, j] - 1) * X[i]
+      else:
+        dW[:, j] += softmax[i, j] * X[i]
+
+  loss /= num_train
+  loss += reg * (W**2).sum()
+
+
+  dW /= num_train
+  dW += 2 * reg * W
 
   #############################################################################
   #                          END OF YOUR CODE                                 #
@@ -511,7 +517,27 @@ def softmax_loss_vectorized(W, X, y, reg):
   # regularization!                                                           #
   #############################################################################
   # Replace "pass" statement with your code
-  pass
+  num_train = X.size(0)
+  num_classes = W.size(1)
+
+  scores = X @ W
+  stable_scores = (scores.t() - scores.max(axis=1)[0]).t()
+  exp_scores = torch.exp(stable_scores)
+  softmax = (exp_scores.t() / exp_scores.sum(axis=1)).t()
+
+  Y = torch.zeros((num_train, num_classes), device=softmax.device)
+  Y[torch.arange(num_train), y] = 1
+
+  correct_label_softmax = softmax[torch.arange(num_train), y]
+  loss = -torch.log(correct_label_softmax).sum()
+
+  dW = -X.t() @ (Y - softmax)
+
+  loss /= num_train
+  loss += reg * (W*W).sum()
+
+  dW /= num_train
+  dW += 2 * reg * W
   #############################################################################
   #                          END OF YOUR CODE                                 #
   #############################################################################
@@ -540,7 +566,8 @@ def softmax_get_search_params():
   # classifier.                                                             #
   ###########################################################################
   # Replace "pass" statement with your code
-  pass
+  learning_rates = [0.001, 0.0025, 0.005]
+  regularization_strengths = [0.01, 0.025, 0.05, 0.075, 0.1, 0.25]
   ###########################################################################
   #                           END OF YOUR CODE                              #
   ###########################################################################
