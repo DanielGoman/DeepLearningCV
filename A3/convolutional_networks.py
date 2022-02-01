@@ -198,15 +198,6 @@ class Conv(object):
             w_channel = w[:, c].flip(dims=(1,2))   # double flip
             dx[n, c, i, j] = (dout_patch * w_channel).sum()
 
-    """
-    for n in range(N):
-      for f in range(F):
-        for i, filter_x in enumerate(range(0, padded_h - HH + 1, stride)):
-          for j, filter_y in enumerate(range(0, padded_w - WW + 1, stride)):
-            dx[n, :, filter_x: filter_x + HH, filter_y: filter_y + WW] = dout[n, f, i, j] * w[f]
-
-    dx = dx[:, :, pad: padded_h - pad, pad: padded_w - pad]
-    """
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
@@ -239,7 +230,18 @@ class MaxPool(object):
     # TODO: Implement the max-pooling forward pass                              #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, C, H, W = x.shape
+    pool_height, pool_width, stride = pool_param['pool_height'], pool_param['pool_width'], pool_param['stride']
+    dtype = x.dtype
+    device = x.device
+    pooled_h = int(1 + (H - pool_height)/stride)
+    pooled_w = int(1 + (W - pool_width)/stride)
+    out = torch.zeros((N, C, pooled_h, pooled_w), dtype=dtype, device=device)
+
+    for i, filter_x in enumerate(range(0, H - pool_height + 1, stride)):
+      for j, filter_y in enumerate(range(0, W - pool_width + 1, stride)):
+        patch = x[:, :, filter_x: filter_x + pool_height, filter_y: filter_y + pool_width]
+        out[:, :, i, j], _ = patch.flatten(start_dim=2).max(dim=2)
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
@@ -261,7 +263,26 @@ class MaxPool(object):
     # TODO: Implement the max-pooling backward pass                             #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    x, pool_param = cache
+    N, C, H, W = x.shape
+    pool_height, pool_width, stride = pool_param['pool_height'], pool_param['pool_width'], pool_param['stride']
+    dtype = x.dtype
+    device = x.device
+    dx = torch.zeros_like(x, dtype=dtype, device=device)
+    
+    for i, filter_x in enumerate(range(0, H - pool_height + 1, stride)):
+      for j, filter_y in enumerate(range(0, W - pool_width + 1, stride)):
+        patch = x[:, :, filter_x: filter_x + pool_height, filter_y: filter_y + pool_width]
+        # take max per patch
+        max_vals, _ = patch.flatten(start_dim=2).max(dim=2)
+        # get a tensor of ones at the entry of the max value, per patch
+        bool_max_vals = (patch.flatten(start_dim=2).transpose(0, 2) == max_vals.t()).to(dtype)
+        # multiplying by the upstream grad, transpose to adjust the shape for the broadcast multiplication
+        downstream_max_vals = bool_max_vals * dout[:, :, i, j].t()
+        # transposing back to (N, C, flattened_patch) and reshaping back to (N, C, patch_height, patch_width)
+        local_downstream_grad = downstream_max_vals.transpose(0, 2).reshape(patch.shape)
+        dx[:, :, filter_x: filter_x + pool_height, filter_y: filter_y + pool_width] = local_downstream_grad
+
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
