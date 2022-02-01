@@ -7,6 +7,7 @@ import random
 from eecs598 import Solver
 from a3_helper import svm_loss, softmax_loss
 from fully_connected_networks import *
+import itertools
 
 def hello_convolutional_networks():
   """
@@ -52,7 +53,41 @@ class Conv(object):
     # Note that you are NOT allowed to use anything in torch.nn in other places. #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, C, H, W = x.shape
+    F, _, HH, WW = w.shape
+    stride = conv_param['stride']
+    pad = conv_param['pad']
+    device = x.device
+    dtype = x.dtype
+    
+    # vertical padding
+    padded_x = torch.cat([torch.zeros((N, C, pad, x.size(3)), device=device, dtype=dtype), 
+                         x, 
+                         torch.zeros((N, C, pad, x.size(3)), device=device, dtype=dtype),
+                        ],
+                        dim=2)
+
+    # horizontal padding
+    padded_x = torch.cat([torch.zeros((N, C, x.size(2) + 2*pad, pad), device=device, dtype=dtype), 
+                         padded_x, 
+                         torch.zeros((N, C, x.size(2) + 2*pad, pad), device=device, dtype=dtype),
+                        ],
+                        dim=3)
+
+    padded_h = x.size(2) + 2*pad
+    padded_w = x.size(3) + 2*pad
+    H_out = int(1 + (padded_h - HH) / stride)
+    W_out = int(1 + (padded_w - WW) / stride)
+    out = torch.zeros((N, F, H_out, W_out), device=device, dtype=dtype)
+
+    # iterating over filter location
+    filters = w.flatten(start_dim=1)
+    for i, filter_x in enumerate(range(0, padded_h - HH + 1, stride)):
+      for j, filter_y in enumerate(range(0, padded_w - WW + 1, stride)):
+        patch = padded_x[:, :, filter_x:filter_x + WW, filter_y:filter_y + HH].flatten(start_dim=1)
+        out[:, :, i, j] = patch@filters.t() + b
+        
+
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
@@ -78,7 +113,100 @@ class Conv(object):
     # TODO: Implement the convolutional backward pass.                          #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    x, w, b, conv_param = cache
+    N, C, H, W = x.shape
+    F, _, HH, WW = w.shape
+    stride = conv_param['stride']
+    pad = conv_param['pad']
+    device = x.device
+    dtype = x.dtype
+
+    padded_h = x.size(2) + 2*pad
+    padded_w = x.size(3) + 2*pad
+    H_out = int(1 + (padded_h - HH) / stride)
+    W_out = int(1 + (padded_w - WW) / stride)
+
+    # vertical padding
+    padded_x = torch.cat([torch.zeros((N, C, pad, x.size(3)), device=device, dtype=dtype), 
+                         x, 
+                         torch.zeros((N, C, pad, x.size(3)), device=device, dtype=dtype),
+                        ],
+                        dim=2)
+
+    # horizontal padding
+    padded_x = torch.cat([torch.zeros((N, C, x.size(2) + 2*pad, pad), device=device, dtype=dtype), 
+                         padded_x, 
+                         torch.zeros((N, C, x.size(2) + 2*pad, pad), device=device, dtype=dtype),
+                        ],
+                        dim=3)
+
+    dx = torch.zeros((N, C, H, W), device=device, dtype=dtype)
+    dw = torch.zeros_like(w, device=device, dtype=dtype)
+    db = torch.zeros_like(b, device=device, dtype=dtype)
+
+    # db
+    db = dout.sum(dim=[0, 2, 3])
+
+    # dw
+    for f in range(F):
+      for c in range(C):
+        for i, filter_x in enumerate(range(0, padded_h - H_out + 1, stride)):
+          for j, filter_y in enumerate(range(0, padded_w - W_out + 1, stride)):
+            # for each input channel c and output channel f
+            # we calculate the sum of (upstream_grad * local_grad) of the entries that
+            # had some effect on the output at index [i,j]
+            x_patch = padded_x[:, c, filter_x: filter_x + H_out, filter_y: filter_y + W_out]
+            dout_channel = dout[:, f]
+            dw[f, c, i, j] = (x_patch * dout_channel).sum()
+
+    # dx
+    # dilating the upstream gradient
+    H_dilated = stride * (H_out-1) + 1
+    W_dilated = stride * (W_out-1) + 1
+    dilated_dout = torch.zeros((N, F, H_dilated, W_dilated), device=device, dtype=dtype)
+
+    indices_product = itertools.product(range(0, H_dilated, stride), range(0, W_dilated, stride))
+    indices = torch.tensor(list(indices_product)).t()
+    dilated_dout[:, :, indices[0], indices[1]] = dout.view((N, F, -1))
+
+
+    dout_pad_h = max(HH - pad - 1, 0)
+    dout_pad_w = max(WW - pad - 1, 0)
+    # vertical padding
+    padded_dout = torch.cat([torch.zeros((N, F, dout_pad_h, W_dilated), device=device, dtype=dtype), 
+                         dilated_dout, 
+                         torch.zeros((N, F, dout_pad_h, W_dilated), device=device, dtype=dtype),
+                        ],
+                        dim=2)
+
+    # horizontal padding
+    padded_dout = torch.cat([torch.zeros((N, F, H_dilated + 2*dout_pad_h, dout_pad_w), device=device, dtype=dtype), 
+                         padded_dout, 
+                         torch.zeros((N, F, H_dilated + 2*dout_pad_h, dout_pad_w), device=device, dtype=dtype),
+                        ],
+                        dim=3)
+
+    padded_dout_h = H_dilated + 2*dout_pad_h
+    padded_dout_w = W_dilated + 2*dout_pad_w
+
+
+    for n in range(N):
+      for c in range(C):
+        for i, filter_x in enumerate(range(0, padded_dout_h - HH + 1)):
+          for j, filter_y in enumerate(range(0, padded_dout_w - WW + 1)):
+            dout_patch = padded_dout[n, :, filter_x: filter_x + HH, filter_y: filter_y + WW]
+            w_channel = w[:, c].flip(dims=(1,2))   # double flip
+            dx[n, c, i, j] = (dout_patch * w_channel).sum()
+
+    """
+    for n in range(N):
+      for f in range(F):
+        for i, filter_x in enumerate(range(0, padded_h - HH + 1, stride)):
+          for j, filter_y in enumerate(range(0, padded_w - WW + 1, stride)):
+            dx[n, :, filter_x: filter_x + HH, filter_y: filter_y + WW] = dout[n, f, i, j] * w[f]
+
+    dx = dx[:, :, pad: padded_h - pad, pad: padded_w - pad]
+    """
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
