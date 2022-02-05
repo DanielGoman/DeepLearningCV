@@ -414,22 +414,22 @@ class FullyConnectedNet(object):
     # dropout forward pass.                                                    #
     ############################################################################
     # Replace "pass" statement with your code
-    out = []
     caches = []
     out_i = X
     reg_penalty = 0
-    for i in range(self.num_layers):
+    for i in range(self.num_layers - 1):
       weights_i, biases_i = self.params[f'W{i+1}'], self.params[f'b{i+1}']
       a_i, cache_i = Linear_ReLU.forward(out_i, weights_i, biases_i)
       out_i = a_i
       if self.use_dropout:
         out_i, dropout_cache = Dropout.forward(a_i, self.dropout_param)
         cache_i = (cache_i, dropout_cache)
-      out.append(out_i)
       caches.append(cache_i)
       reg_penalty += self.reg * (self.params[f'W{i+1}']**2).sum()
 
-    scores = out_i
+    scores, cache_out = Linear.forward(out_i, self.params[f'W{self.num_layers}'], self.params[f'b{self.num_layers}'])
+    caches.append(cache_out)
+    reg_penalty += self.reg * (self.params[f'W{self.num_layers}']**2).sum()
     ############################################################################
     #                             END OF YOUR CODE                             #
     ############################################################################
@@ -451,9 +451,11 @@ class FullyConnectedNet(object):
     # Replace "pass" statement with your code
     loss, loss_dx = softmax_loss(scores, y)
     loss += reg_penalty
-    upstream_grad = loss_dx
+    upstream_grad, dw, db = Linear.backward(loss_dx, caches[-1])
+    grads[f'W{self.num_layers}'] = dw + 2*self.reg*self.params[f'W{self.num_layers}']
+    grads[f'b{self.num_layers}'] = db
 
-    for i in reversed(range(self.num_layers)):
+    for i in reversed(range(self.num_layers - 1)):
       if self.use_dropout:
         cache, dropout_cache = caches[i]
         upstream_grad = Dropout.backward(upstream_grad, dropout_cache)
@@ -502,8 +504,8 @@ def get_three_layer_network_params():
   weight_scale = 1e-2   # Experiment with this!
   learning_rate = 1e-4  # Experiment with this!
   # Replace "pass" statement with your code
-  learning_rate = 5.1e-2
-  weight_scale = 0.075
+  weight_scale = 1e-2
+  learning_rate = 1e-2
   ############################################################################
   #                             END OF YOUR CODE                             #
   ############################################################################
@@ -518,7 +520,7 @@ def get_five_layer_network_params():
   learning_rate = 2e-3  # Experiment with this!
   weight_scale = 1e-5   # Experiment with this!
   # Replace "pass" statement with your code
-  learning_rate = 1e-2
+  learning_rate = 1e-4
   weight_scale = 1e-2
   ############################################################################
   #                             END OF YOUR CODE                             #
