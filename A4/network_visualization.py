@@ -47,7 +47,10 @@ def compute_saliency_maps(X, y, model):
   # Hint: X.grad.data stores the gradients                                     #
   ##############################################################################
   # Replace "pass" statement with your code
-  pass
+  scores = model(X)
+  loss = nn.functional.cross_entropy(scores, y, reduction='sum')
+  loss.backward()
+  return X.grad.data.abs().max(dim=1)[0]
   ##############################################################################
   #               END OF YOUR CODE                                             #
   ##############################################################################
@@ -88,7 +91,23 @@ def make_adversarial_attack(X, target_y, model, max_iter=100, verbose=True):
   # You can print your progress over iterations to check your algorithm.       #
   ##############################################################################
   # Replace "pass" statement with your code
-  pass
+
+  for i in range(max_iter):
+    scores = model(X_adv)
+
+    print("Iteration {}: target score {:3f}, max score {:3f}".format(i, scores[0, target_y].item(), scores.max(dim=1)[0].item()))
+    if scores.max(dim=1)[1] == target_y:
+      print('success')
+      break
+
+    loss = scores[0, target_y]
+    loss.backward()
+
+    grad = X_adv.grad.data
+    with torch.no_grad():
+      X_adv += learning_rate*grad/((grad**2).sum(dim=(1,2,3)).sqrt())
+
+    X_adv.grad.data.zero_()
   ##############################################################################
   #                             END OF YOUR CODE                               #
   ##############################################################################
@@ -123,7 +142,14 @@ def class_visualization_step(img, target_y, model, **kwargs):
     # after each step.                                                     #
     ########################################################################
     # Replace "pass" statement with your code
-    pass
+    scores = model(img)
+    loss = scores[:, target_y] - l2_reg * (img**2).sum()
+    loss.backward()
+
+    with torch.no_grad():
+      img += learning_rate * img.grad.data 
+
+    img.grad.data.zero_()
     ########################################################################
     #                             END OF YOUR CODE                         #
     ########################################################################
