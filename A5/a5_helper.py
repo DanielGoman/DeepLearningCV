@@ -150,6 +150,7 @@ class FeatureExtractor(torch.nn.Module):
 
     self.mobilenet = models.mobilenet_v2(pretrained=True)
     self.mobilenet = torch.nn.Sequential(*list(self.mobilenet.children())[:-1]) # Remove the last classifier
+    #print(self.mobilenet)
 
     # average pooling
     if pooling:
@@ -158,8 +159,8 @@ class FeatureExtractor(torch.nn.Module):
     for i in self.mobilenet.named_parameters():
       i[1].requires_grad = True # fine-tune all
 
-    if verbose:
-      summary(self.mobilenet.cuda(), (3, reshape_size, reshape_size))
+    #if verbose:
+    #  summary(self.mobilenet.cuda(), (3, reshape_size, reshape_size))
   
   def forward(self, img, verbose=False):
     """
@@ -176,8 +177,7 @@ class FeatureExtractor(torch.nn.Module):
     feat = []
     process_batch = 500
     for b in range(math.ceil(num_img/process_batch)):
-      feat.append(self.mobilenet(img_prepro[b*process_batch:(b+1)*process_batch]
-                              ).squeeze(-1).squeeze(-1)) # forward and squeeze
+      feat.append(self.mobilenet(img_prepro[b*process_batch:(b+1)*process_batch]).squeeze(-1).squeeze(-1)) # forward and squeeze
     feat = torch.cat(feat)
     
     if verbose:
@@ -272,8 +272,10 @@ def ReferenceOnActivatedAnchors(anchors, bboxes, grid, iou_mat, pos_thresh=0.7, 
     max_iou_per_box = iou_mat.max(dim=1, keepdim=True)[0]
     activated_anc_mask = (iou_mat == max_iou_per_box) & (max_iou_per_box > 0)
     activated_anc_mask |= (iou_mat > pos_thresh) # using the pos_thresh condition as well
+
     # if an anchor matches multiple GT boxes, choose the box with the largest iou
     activated_anc_mask = activated_anc_mask.max(dim=-1)[0] # Bx(AxH’xW’)
+
     activated_anc_ind = torch.nonzero(activated_anc_mask.view(-1)).squeeze(-1)
 
     # GT conf scores
@@ -292,19 +294,27 @@ def ReferenceOnActivatedAnchors(anchors, bboxes, grid, iou_mat, pos_thresh=0.7, 
     bbox_mask = (bboxes[:, :, 0] != -1) # BxN, indicate invalid boxes
     bbox_centers = (bboxes[:, :, 2:4] - bboxes[:, :, :2]) / 2. + bboxes[:, :, :2] # BxNx2
 
+    # manhattan dists
     mah_dist = torch.abs(grid.view(B, -1, 2).unsqueeze(2) - bbox_centers.unsqueeze(1)).sum(dim=-1) # Bx(H'xW')xN
+    # distance of the closest center cell on the grid
     min_mah_dist = mah_dist.min(dim=1, keepdim=True)[0] # Bx1xN
+    # True for the closest center cell on the grid
     grid_mask = (mah_dist == min_mah_dist).unsqueeze(1) # Bx1x(H'xW')xN
+
 
     reshaped_iou_mat = iou_mat.view(B, A, -1, N)
     anc_with_largest_iou = reshaped_iou_mat.max(dim=1, keepdim=True)[0] # Bx1x(H’xW’)xN
+    # True for the anchor with the maximal IoU with some GT and some spatial location
+    # over all anchors 
     anc_mask = (anc_with_largest_iou == reshaped_iou_mat) # BxAx(H’xW’)xN
+    # zeroing for all anchors the center cells that aren't the closest to the respective GT
     activated_anc_mask = (grid_mask & anc_mask).view(B, -1, N)
+    # zeroing for all anchors and spatial locations the GTs that are just padding
     activated_anc_mask &= bbox_mask.unsqueeze(1)
     
     # one anchor could match multiple GT boxes
     activated_anc_ind = torch.nonzero(activated_anc_mask.view(-1)).squeeze(-1)
-    GT_conf_scores = iou_mat.view(-1)[activated_anc_ind]
+    GT_conf_scores = iou_mat.reshape(-1)[activated_anc_ind]
     bboxes = bboxes.view(B, 1, N, 5).repeat(1, A*h_amap*w_amap, 1, 1).view(-1, 5)[activated_anc_ind]
     GT_class = bboxes[:, 4].long()
     bboxes = bboxes[:, :4]
@@ -337,6 +347,7 @@ def ReferenceOnActivatedAnchors(anchors, bboxes, grid, iou_mat, pos_thresh=0.7, 
   negative_anc_ind = negative_anc_ind[torch.randint(0, negative_anc_ind.shape[0], (activated_anc_ind.shape[0],))]
   negative_anc_coord = anchors.view(-1, 4)[negative_anc_ind.view(-1)]
   
+
   # activated_anc_coord and negative_anc_coord are mainly for visualization purposes
   return activated_anc_ind, negative_anc_ind, GT_conf_scores, GT_offsets, GT_class, \
          activated_anc_coord, negative_anc_coord

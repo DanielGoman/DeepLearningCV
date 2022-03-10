@@ -28,7 +28,10 @@ class ProposalModule(nn.Module):
     # Make sure that your region proposal module is called pred_layer
     self.pred_layer = None      
     # Replace "pass" statement with your code
-    pass
+    self.pred_layer = nn.Sequential(nn.Conv2d(in_dim, hidden_dim, kernel_size=3, padding=1),
+                                nn.Dropout(drop_ratio),
+                                nn.LeakyReLU(),
+                                nn.Conv2d(hidden_dim, 6*num_anchors, kernel_size=1))  
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -105,7 +108,24 @@ class ProposalModule(nn.Module):
     # function from the previous notebook.                                     #
     ############################################################################
     # Replace "pass" statement with your code
-    pass
+    B, _, H, W = features.shape
+    A = self.num_anchors
+
+    out = self.pred_layer(features)                           # (B, 6A, 7, 7)
+    conf_scores = out[:, :2*A].reshape(B, A, 2, H, W)         # (B, A, 2, 7, 7)
+    offsets = out[:, 2*A:].reshape(B, A, 4, H, W)             # (B, A, 4, 7, 7)
+
+    if mode == 'train':
+      pos_conf_scores = self._extract_anchor_data(conf_scores, pos_anchor_idx)        # (M, 2)
+      neg_conf_scores = self._extract_anchor_data(conf_scores, neg_anchor_idx)        # (M, 2)
+      conf_scores = torch.stack([pos_conf_scores, neg_conf_scores]).reshape(-1, 2)    # (2M, 2)
+
+      #offsets = offsets.transpose(2, 4).reshape(-1,4)[pos_anchor_idx]
+      offsets = self._extract_anchor_data(offsets, pos_anchor_idx)                    # (M, 4)
+      # generate proposals on (M,4) shape
+      proposals = GenerateProposal(pos_anchor_coord.reshape(-1, 1, 1, 1, 4), offsets.reshape(-1, 1, 1, 1, 4), \
+                                    method='FasterRCNN').reshape((-1, 4))    # (M, 4)
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -218,7 +238,18 @@ class RPN(nn.Module):
     #       as positive/negative anchors have been explicitly targeted.          #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    features = self.feat_extractor(images)            # (B, 1280, 7, 7)
+    B, _, H, W = features.shape
+    anc_per_img = len(self.anchor_list)
+    # (2M, 2),   (M, 4),  (M,4)
+    grid = GenerateGrid(B, W, H, device=bboxes.device)                      # (B, H, W)
+    anc = GenerateAnchor(self.anchor_list, grid)      # (B, A, H, W)
+    iou_mat = IoU(anc, bboxes)                        # (B, AHW, N)
+    pos_anchor_idx, neg_anchor_idx, _, GT_offsets, GT_class, pos_anchor_coord, _ \
+            = ReferenceOnActivatedAnchors(anc, bboxes, grid, iou_mat)
+    conf_scores, offsets, proposals = self.prop_module(features, pos_anchor_coord, pos_anchor_idx, neg_anchor_idx)  
+    total_loss = w_conf * ConfScoreRegression(conf_scores, batch_size=B) \
+                  + w_reg * BboxRegression(offsets, GT_offsets, batch_size=B)
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -261,7 +292,7 @@ class RPN(nn.Module):
     """
     assert mode in ('RPN', 'FasterRCNN'), 'invalid inference mode!'
 
-    features, final_conf_probs, final_proposals = None, None, None
+    features, final_conf_probs, final_proposals = None, [], []
     ##############################################################################
     # TODO: Predicting the RPN proposal coordinates `final_proposals` and        #
     # confidence scores `final_conf_probs`.                                     #
@@ -272,7 +303,28 @@ class RPN(nn.Module):
     # HINT: Use `torch.no_grad` as context to speed up the computation.          #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    with torch.no_grad():
+      features = self.feat_extractor(images)
+      conf_scores, offsets = self.prop_module(features)
+      B, A, _, H, W = conf_scores.shape
+
+      grid = GenerateGrid(B, W, H)
+      anchors = GenerateAnchor(self.anchor_list, grid)
+      proposals = GenerateProposal(anchors, offsets.transpose(2,4), method='FasterRCNN')   # (B, A, H, W, 4)
+
+      conf_probs = torch.sigmoid(conf_scores)
+      thresholded_conf_probs = conf_probs.clone()
+      thresholded_conf_probs[thresholded_conf_probs < thresh] = 0
+      for b in range(B):
+        flat_proposals = proposals[b].reshape((-1, 4))
+        flat_conf_probs = thresholded_conf_probs[b, :, 0].flatten()
+        keep = torchvision.ops.boxes.nms(flat_proposals, flat_conf_probs, nms_thresh)
+
+        final_conf_probs.append(conf_probs[b, :, 0].reshape(-1, 1)[keep])
+        final_proposals.append(flat_proposals[keep])
+        #print(conf_probs[b, :, 0].flatten()[keep].shape, flat_proposals[keep].shape)
+
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -302,7 +354,12 @@ class TwoStageDetector(nn.Module):
     self.cls_layer = None
 
     # Replace "pass" statement with your code
-    pass
+    self.rpn = RPN()
+    self.cls_layer = nn.Sequential(nn.Linear(in_dim, hidden_dim),
+                                   nn.Dropout(drop_ratio),
+                                   nn.ReLU(),
+                                   nn.Linear(hidden_dim, num_classes))
+    #self.cls_layer = nn.Linear(in_dim, hidden_dim, device='cuda')
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -336,7 +393,25 @@ class TwoStageDetector(nn.Module):
     #    total_loss = rpn_loss + cls_loss.                                       #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    # total_loss, conf_scores, proposals, features, GT_class, pos_anchor_idx, anc_per_img
+    cls_loss = 0
+    # float, _, (M, 4), (B, 1280, 7, 7), (M,), (M,), _
+    rpn_loss, _, proposals, features, GT_class, pos_anchor_idx, _ = self.rpn(images, bboxes, output_mode='all')
+    #print(features.shape)
+    # adding a column to annotate to which image of the batch each proposal belongs
+    rescaling_factor = 7*7*self.rpn.anchor_list.shape[0]
+    rescaled_pos_anchor_idx = (pos_anchor_idx / rescaling_factor).long()
+
+    proposals = torch.cat([rescaled_pos_anchor_idx.unsqueeze(-1), proposals], dim=1)   
+
+    aligned_features = torchvision.ops.roi_align(input=features, boxes=proposals, output_size=[2,2])  # (M, 1280, 2, 2)
+    pooled_features = torch.nn.functional.avg_pool2d(input=aligned_features, kernel_size=2).squeeze(dim=-1).squeeze(dim=-1) # (M, 1280)
+
+    scores = self.cls_layer(pooled_features)                              # (M, num_classes)
+    class_prob = torch.nn.functional.softmax(scores, dim=1)               # (M, num_classes)
+    cls_loss = torch.nn.functional.cross_entropy(class_prob, GT_class)  
+
+    total_loss = rpn_loss + cls_loss
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -377,8 +452,22 @@ class TwoStageDetector(nn.Module):
     # probabilities from the second-stage network to compute final_class.       #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    final_class = []
+    final_proposals, final_conf_probs, features = self.rpn.inference(images, thresh=thresh, nms_thresh=nms_thresh, mode='FasterRCNN')
+    aligned_features = torchvision.ops.roi_align(input=features, boxes=final_proposals, output_size=[2,2])            # (M, 1280, 2, 2)
+    pooled_features = torch.nn.functional.avg_pool2d(input=aligned_features, kernel_size=2).squeeze(dim=-1).squeeze(dim=-1) # (M, 1280)
+    scores = self.cls_layer(pooled_features)                              # (M, num_classes)
+    class_prob = torch.nn.functional.softmax(scores, dim=1)               # (M, num_classes)
+    max_class = class_prob.argmax(dim=1, keepdim=True)                    # (M,)
+
+    i = 0
+    for proposals_set in final_proposals:
+      num_proposals = len(proposals_set)
+      proposals = max_class[i: i+num_proposals]
+      final_class.append(proposals)
+      i += num_proposals
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
     return final_proposals, final_conf_probs, final_class
+
